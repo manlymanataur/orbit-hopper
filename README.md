@@ -4,7 +4,9 @@ A roguelike planet-hopping shooter that runs in the browser. Start at the neutra
 
 ## Play
 
-Open `index.html` in any modern browser. There is no build step and no dependencies.
+**[Play in your browser](https://manlymanataur.github.io/orbit-hopper/)**
+
+Or download the repository and open `index.html` in any modern browser. There is no build step and no dependencies.
 
 ## Controls
 
