@@ -72,6 +72,9 @@ kbd{ font-family:inherit; font-weight:700; color:var(--text); border:1px solid v
 .mhint{ flex:1; color:var(--dim); font-size:.92em; line-height:1.35; }
 .mbtns{ display:flex; gap:.6em; }
 
+.goods{ color:var(--good); font-weight:700; }
+.tbtns{ display:flex; gap:.4em; flex-wrap:wrap; }
+.mbtns button{ padding:.55em .8em; }
 .chip{ display:inline-block; font-size:.78em; font-weight:700; padding:.15em .5em; border-radius:999px; border:1px solid currentColor; margin-bottom:.2em; }
 .slot-empty{ color:var(--dim); border-style:dashed; }
 .fac-line{ display:flex; gap:.5em; align-items:center; }
@@ -87,6 +90,8 @@ kbd{ font-family:inherit; font-weight:700; color:var(--text); border:1px solid v
     <div class="mhint" id="mhint"></div>
     <div class="mbtns">
       <button class="ghost" id="bClear">Clear route</button>
+      <button class="ghost" id="bColony">Colony</button>
+      <button class="ghost" id="bTrade">Trade</button>
       <button class="ghost" id="bLoad">Loadout</button>
       <button class="ghost" id="bHangar">Hangar</button>
       <button id="bJump">Jump</button>
@@ -152,6 +157,17 @@ const FAC={
     threat:'Gunners fire wide shotgun blasts. Raiders line up and ram you at full speed.'},
 };
 const FKEYS=['choir','tess','tide','corsair'];
+const YOU={name:'Your dominion',color:'#5ce1e6'};
+const FI=f=>f==='you'?YOU:FAC[f];
+const BUILD={
+  mine:{name:'Mining rig',desc:'Produces 2 extra trade goods every jump.',max:1,cost:[40],pip:'#ffc857'},
+  hub:{name:'Trade hub',desc:'Every hub raises the price all factions pay per good, and earns 2 scrap per trade route from this system every jump.',max:1,cost:[60],pip:'#7ee081'},
+  garrison:{name:'Garrison',desc:'Raiders need 2 more jumps per level to capture this system.',max:2,cost:[50,80],pip:'#f3e9d2'},
+  cannon:{name:'Cannon battery',desc:'Raiders need 1 more jump per level to capture this system, and the cannon fights beside you if they attack it.',max:3,cost:[35,55,80],pip:'#b8f35c'},
+};
+const SYL=['ka','ve','tor','ish','mal','zen','or','qua','rhe','syl','dra','ny','pel','cor','ul','xe','am','bri','tha','lo'];
+function genName(){ const a=pick(SYL),b=pick(SYL); const n=(a+b).charAt(0).toUpperCase()+(a+b).slice(1); return Math.random()<.5?n+' '+pick(['I','II','III','IV','V','VI','VII']):n; }
+function hexA(c,a){ const n=parseInt(c.slice(1),16); return `rgba(${n>>16&255},${n>>8&255},${n&255},${a})`; }
 
 // ================= meta progression =================
 const META_KEY='orbit-hopper-meta-v1';
@@ -237,7 +253,8 @@ const RECRUITS={
 };
 const GEN_RECRUITS=['interceptor','gunship','medic','marine'];
 const NODE_T={
-  hub:{name:'Neutral hub',color:'#5ce1e6',desc:'Your starting point. Every direction leads into a different faction.'},
+  hub:{name:'Home station',color:'#5ce1e6',desc:'Your first system. Every direction leads into a different faction.'},
+  raid:{name:'Raider ambush',color:'#ff4f79',desc:'A raider fleet.'},
   combat:{name:'Hostile system',color:'#ff8a5b',desc:'Faction patrols. Clear three waves for a reward.'},
   elite:{name:'Fortified system',color:'#ff4f79',desc:'Tougher enemies, bonus scrap, and a better reward.'},
   outpost:{name:'Trade outpost',color:'#7ee081',desc:'Repair, buy modules and satellites, or add a hardpoint.'},
@@ -286,7 +303,7 @@ function genMap(){
   const add=(ring,a,type,fac)=>{
     const rx=MC.rx*ring*(ring===5?1:1), ry=MC.ry*ring;
     const n={id:nodes.length,ring,a,x:MC.x+Math.cos(a)*rx+(ring&&ring<5?rand(-10,10):0),y:MC.y+Math.sin(a)*ry+(ring&&ring<5?rand(-6,6):0),
-      type,fac,visited:false,look:planetLook()};
+      type,fac,home:fac,name:ring===0?'Home station':genName(),visited:false,look:planetLook(),buildings:{}};
     nodes.push(n); adj.push(new Set()); return n;
   };
   const link=(a,b)=>{ adj[a.id].add(b.id); adj[b.id].add(a.id); };
@@ -367,6 +384,8 @@ document.getElementById('bClear').onclick=()=>{ run.route=[]; updateMapBar(); };
 document.getElementById('bHangar').onclick=()=>{ mapbar.classList.remove('show'); openHangar(()=>toMap()); };
 document.getElementById('bLoad').onclick=()=>{ mapbar.classList.remove('show'); openLoadout(()=>toMap()); };
 document.getElementById('bJump').onclick=()=>engage();
+document.getElementById('bColony').onclick=()=>openColony();
+document.getElementById('bTrade').onclick=()=>openTrade();
 const facTag=f=>f?`<span class="chip" style="color:${FAC[f].color}">${FAC[f].name}</span>`:'';
 
 // ================= screens =================
@@ -374,7 +393,7 @@ function toTitle(){
   mode='title'; bg='title'; mapbar.classList.remove('show'); run=null;
   overlay(`<div class="title-wrap">
     <h1>Orbit<span>Hopper</span></h1>
-    <p class="tag">Start at the neutral hub and pick a direction. Four factions hold the chart, each with its own weapons to survive and powers to steal. Recruit a squad, fit out your ship, and destroy two flagships to win.</p>
+    <p class="tag">Start at the neutral hub and pick a direction. Four factions hold the chart, each with its own weapons to survive and powers to steal. Clear a system and a neighbouring faction claims it, growing stronger, unless you build there and fly your own flag. Trade with your enemies, and watch for raiders coming to take what you hold. Recruit a squad, fit out your ship, and destroy two flagships to win.</p>
     <div class="menu"><button data-act="start">Start run</button><button class="ghost" data-act="hangar">Hangar <span class="dust">${meta.dust} stardust</span></button></div>
     <div class="controls">
       <kbd>W A S D</kbd><span>Walk around a planet, or steer while flying</span>
@@ -390,22 +409,24 @@ function toTitle(){
 function startRun(){
   run={fk:0,flags:{},won:false,maxHull:3+ml('hull'),hull:0,scrap:30+25*ml('seed'),up:{},weapons:[{t:'blaster',lvl:1}],
        sats:ml('escort'),rerolls:ml('reroll'),kills:0,nodes:0,route:[],map:null,pos:0,history:[],
-       mods:{},equipped:[],bonusSlots:0,squad:[],tactic:'escort',shotCount:0};
+       mods:{},equipped:[],bonusSlots:0,squad:[],tactic:'escort',shotCount:0,power:{choir:0,tess:0,tide:0,corsair:0},note:'',goods:0,turn:0,fleets:[],fleetId:0,log:[],pflash:{}};
   run.hull=run.maxHull;
   if(ml('arsenal')) run.weapons.push({t:pick(['spread','missile','rail']),lvl:1});
   if(ml('wingman')) run.squad.push({kind:'interceptor'});
   recalc();
   if(ml('proto')) gainModule(pick(GEN_MODS));
-  run.map=genMap(); run.pos=0; run.history=[0];
+  run.map=genMap(); run.pos=0; run.history=[0]; run.map.nodes[0].fac='you';
   meta.stats.runs++; saveMeta();
   toMap();
 }
 
 function toMap(){ hideOverlay(); mode='map'; bg='map'; mapbar.classList.add('show'); updateMapBar(); }
 function updateMapBar(){
-  document.getElementById('mstats').innerHTML=`<span>Hull ${run.hull}/${run.maxHull}</span><span class="scrap">${Math.floor(run.scrap)} scrap</span><span>Squad ${run.squad.length}/${squadCap()}</span>`;
+  document.getElementById('mstats').innerHTML=`<span>Hull ${run.hull}/${run.maxHull}</span><span class="scrap">${Math.floor(run.scrap)} scrap</span><span class="goods">${run.goods} goods</span>`;
+  document.getElementById('bColony').disabled=run.map.nodes[run.pos].fac!=='you';
+  document.getElementById('bTrade').disabled=!tradeRoutes().length;
   const n=run.route.length;
-  document.getElementById('mhint').textContent=n?`${n} jump${n>1?'s':''} plotted. Cleared systems are free to pass through.`:'Click a highlighted system to plot a jump. Keep clicking to chart a longer route.';
+  document.getElementById('mhint').textContent=n?`${n} jump${n>1?'s':''} plotted. Systems you still hold are free to pass through.`:(run.note?run.note+' ':'')+'Click a highlighted system to plot a jump.';
   const j=document.getElementById('bJump'); j.disabled=!n;
   j.textContent=n?`Jump (${n})`:'Jump';
   document.getElementById('bClear').disabled=!n;
@@ -414,27 +435,103 @@ function nodeAt(x,y){ return run.map.nodes.find(n=>d2(x,y,n.x,n.y)<(n.type==='fl
 function mapClick(x,y){
   const n=nodeAt(x,y); if(!n) return;
   const A=run.map.adj, r=run.route, lastId=r.length?r[r.length-1]:run.pos, idx=r.indexOf(n.id);
-  if(n.type==='flagship'&&run.flags[n.fac]) return;
+  if(n.type==='flagship'&&run.flags[n.home]&&n.fac!=='you') return;
   if(idx>=0) r.length=idx;
   else if(A[lastId].includes(n.id)) r.push(n.id);
   else if(A[run.pos].includes(n.id)) run.route=[n.id];
   sfx('pick'); updateMapBar();
 }
 function engage(){
+  run.note='';
+  const N=run.map.nodes;
   while(run.route.length){
-    const id=run.route.shift(), n=run.map.nodes[id];
+    const id=run.route.shift(), n=N[id];
     run.pos=id; run.history.push(id);
+    advanceTurn();
+    const fleet=run.fleets.find(f=>f.at===id);
+    if(fleet){ run.route=[]; mapbar.classList.remove('show'); if(document.activeElement) document.activeElement.blur(); sfx('warp'); startStage(n,{kind:'raid',fac:fleet.fac,fleet}); return; }
     if(n.visited) continue;
-    n.visited=true; mapbar.classList.remove('show');
-    if(document.activeElement) document.activeElement.blur();
-    sfx('warp');
-    if(n.type==='combat'||n.type==='elite'||n.type==='flagship') startStage(n);
-    else if(n.type==='outpost') showOutpost(n);
-    else if(n.type==='recruit') showRecruit(n);
-    else showAnomaly(n);
-    return;
+    enterNode(n); return;
   }
   updateMapBar();
+}
+function enterNode(n){
+  n.visited=true; mapbar.classList.remove('show');
+  if(document.activeElement) document.activeElement.blur();
+  sfx('warp');
+  if(n.type==='combat'||n.type==='elite'||n.type==='flagship') startStage(n);
+  else if(n.type==='outpost') showOutpost(n);
+  else if(n.type==='recruit') showRecruit(n);
+  else showAnomaly(n);
+}
+const aliveFac=f=>!!FAC[f]&&!run.flags[f];
+function ownedNodes(){ return run.map.nodes.filter(n=>n.fac==='you'); }
+function tradeRoutes(){
+  const out=[], N=run.map.nodes;
+  for(const u of N) if(u.fac==='you') for(const v of run.map.adj[u.id]) if(aliveFac(N[v].fac)) out.push([u.id,v]);
+  return out;
+}
+function hubCount(){ return ownedNodes().filter(n=>n.buildings.hub).length; }
+function goodsPerJump(){ return ownedNodes().reduce((a,n)=>a+1+2*(n.buildings.mine||0),0); }
+function hubIncome(){ const N=run.map.nodes; return tradeRoutes().filter(([u])=>N[u].buildings.hub).length*2; }
+function tradeRate(f){ const N=run.map.nodes; return Math.min(14,3+hubCount()+tradeRoutes().filter(([,v])=>N[v].fac===f).length); }
+function logEvent(text,color){ run.log.unshift({text,color:color||'#f3e9d2',t:clock}); if(run.log.length>4) run.log.length=4; run.note=(run.note?run.note+' ':'')+text; }
+function addPower(f,d){ run.power[f]=Math.max(0,run.power[f]+d); run.pflash[f]={t:clock,d}; }
+function siegeLen(n){ const b=n.buildings||{}; return 2+2*(b.garrison||0)+(b.cannon||0); }
+function advanceTurn(){
+  run.turn++;
+  run.goods+=goodsPerJump(); run.scrap+=hubIncome();
+  const N=run.map.nodes;
+  for(const f of run.fleets.slice()){
+    if(!f.siege) continue;
+    const n=N[f.at];
+    if(n.fac!=='you'){ f.siege=false; continue; }
+    f.siegeT--;
+    if(f.siegeT<=0) captureNode(n,f);
+  }
+  for(const f of run.fleets){
+    if(f.siege||f.next==null) continue;
+    f.from=f.at; f.at=f.next; f.anim=0;
+    const n=N[f.at];
+    if(n.fac==='you'&&f.at!==run.pos){ f.siege=true; f.siegeT=siegeLen(n); logEvent(`${FAC[f.fac].name} raiders are besieging ${n.name}. It falls in ${f.siegeT} jumps unless you drive them off.`,FAC[f.fac].color); }
+  }
+  if(run.turn>=3) for(const k of FKEYS){
+    if(!aliveFac(k)) continue;
+    const mine=run.fleets.filter(f=>f.fac===k).length, cap=1+Math.floor(run.power[k]/3);
+    if(mine<cap&&run.fleets.length<6&&Math.random()<Math.min(.35,.08+.03*run.power[k])){
+      const homes=N.filter(n=>n.fac===k&&n.id!==run.pos); if(!homes.length) continue;
+      const home=homes.find(n=>n.type==='flagship')||pick(homes);
+      run.fleets.push({id:run.fleetId++,fac:k,at:home.id,from:home.id,anim:1,siege:false,next:null,aggro:Math.random()<.4});
+      logEvent(`A ${FAC[k].name} raider fleet launched from ${home.name}.`,FAC[k].color);
+    }
+  }
+  run.fleets.forEach(planFleet);
+}
+function captureNode(n,f){
+  const nm=n.name;
+  n.fac=f.fac; n.visited=false; n.claimed=true; n.buildings={}; n.flash=1;
+  if(n.type==='hub') n.type='combat'; if(n.type==='flagship') n.type='elite';
+  addPower(f.fac,1);
+  run.fleets=run.fleets.filter(x=>x!==f);
+  logEvent(`${FAC[f.fac].name} raiders captured ${nm}. Their strength is now ${run.power[f.fac]}.`,FAC[f.fac].color);
+}
+function bfsFrom(s0){ const A=run.map.adj, dist={[s0]:0}, prev={}, q=[s0]; while(q.length){ const u=q.shift(); for(const v of A[u]) if(!(v in dist)){ dist[v]=dist[u]+1; prev[v]=u; q.push(v); } } return {dist,prev}; }
+function planFleet(f){
+  f.next=null; f.target=null; if(f.siege) return;
+  const N=run.map.nodes, {dist,prev}=bfsFrom(f.at);
+  let target=null,best=1e9;
+  for(const n of N) if(n.fac==='you'&&dist[n.id]!=null&&dist[n.id]<best&&!run.fleets.some(o=>o!==f&&o.target===n.id)){ best=dist[n.id]; target=n.id; }
+  if(f.aggro&&dist[run.pos]!=null&&dist[run.pos]<=2) target=run.pos;
+  if(target==null){ f.next=pick(run.map.adj[f.at]); return; }
+  f.target=target; f.dist=dist[target];
+  if(target===f.at) return;
+  let c=target; while(prev[c]!==f.at) c=prev[c]; f.next=c;
+}
+function ownNode(n){
+  n.fac='you'; n.visited=true; n.claimed=false; n.flash=1; n.buildings=G.sysBuild;
+  run.fleets.forEach(planFleet);
+  logEvent(`${n.name} now flies your flag.`,'#5ce1e6');
+  return `${n.name} now flies your flag. Raiders will come for it, so think about a garrison.`;
 }
 
 // ================= modules =================
@@ -599,7 +696,13 @@ function openHangar(ret){
       return `<div class="item"><div><div class="t">${d.name}</div><div class="d">${d.desc}</div><div class="pips">${Array.from({length:d.max},(_,i)=>`<i class="${i<l?'on':''}"></i>`).join('')}</div></div>
       <button data-act="buy" data-arg="${d.id}" ${max||c>meta.dust?'disabled':''}>${max?'Maxed':'Buy for '+c}</button></div>`;}).join('')}</div>
     <div class="statline"><span>Runs ${meta.stats.runs}</span><span>Wins ${meta.stats.wins}</span><span>Most flagships destroyed ${meta.stats.bestFlags||0}</span><span>Most systems cleared ${meta.stats.bestNodes}</span><span>Enemies destroyed ${meta.stats.kills}</span></div>
-    <div class="row-actions"><button data-act="back">Back</button></div></div>`,{
+    <div class="row-actions"><button data-act="back">Back</button><button class="ghost" data-act="reset">Reset hangar</button></div></div>`,{
+    reset:()=>{ const spent=META_DEFS.reduce((a,d)=>{ let t=0; for(let l=0;l<ml(d.id);l++) t+=metaCost(d,l); return a+t; },0);
+      overlay(`<div class="panel narrow"><h2>Reset hangar</h2><p class="sub">Refunding returns the ${spent} stardust you spent so you can buy a different set of upgrades. Erasing wipes your stardust, upgrades and records completely. Neither can be undone.${inRun?' Your current run keeps what it started with.':''}</p>
+        <div class="row-actions"><button data-act="refund" ${spent?'':'disabled'}>Refund all upgrades</button><button class="ghost" data-act="erase">Erase all progress</button><button class="ghost" data-act="cancel">Cancel</button></div></div>`,{
+        refund:()=>{ meta.dust+=spent; meta.lv={}; saveMeta(); render(); },
+        erase:()=>{ meta=defaultMeta(); saveMeta(); render(); },
+        cancel:render }); },
     buy:id=>{ const d=META_DEFS.find(x=>x.id===id),l=ml(id),c=metaCost(d,l); if(l>=d.max||c>meta.dust) return; meta.dust-=c; meta.lv[id]=l+1; saveMeta(); sfx('buy'); render(); },
     back:()=>{ hideOverlay(); ret(); }
   });
@@ -607,12 +710,13 @@ function openHangar(ret){
 }
 
 // ================= stage =================
-function startStage(node){
+function startStage(node,opt={}){
   hideOverlay();
-  const T=tier(node);
-  G={kind:node.type,node,fac:node.fac,tier:T,planets:[],enemies:[],pb:[],eb:[],pickups:[],parts:[],queue:[],allies:[],pods:[],beams:[],mines:[],trail:[],holes:[],zaps:[],
-     wave:0,waves:buildWaves(node.type,node.fac,T),waveDelay:1.2,clear:false,gate:null,t:0,banner:null,shake:0,boss:null,satCd:[],reboundCd:0,done:false,
-     bs:1+.035*T,pdCd:0,grapeCd:1,boardCd:3,trailCd:0,phoenixUsed:false,hintShown:false};
+  const kind=opt.kind||node.type, fac=opt.fac||node.fac;
+  const T=Math.max(1,node.ring)+1.2*run.fk, PW=facPower(fac);
+  G={kind,node,fac,fleet:opt.fleet||null,sysBuild:node.fac==='you'?node.buildings:{},playerClaim:false,tier:T,planets:[],enemies:[],pb:[],eb:[],pickups:[],parts:[],queue:[],allies:[],pods:[],beams:[],mines:[],trail:[],holes:[],zaps:[],
+     power:PW,wave:0,waves:buildWaves(kind,fac,T,PW),waveDelay:1.2,clear:false,gate:null,t:0,banner:null,shake:0,boss:null,satCd:[],reboundCd:0,done:false,
+     bs:1+.035*T+.03*PW,pdCd:0,grapeCd:1,boardCd:3,trailCd:0,phoenixUsed:false,hintShown:false};
   const n=ri(4,6); let tries=0;
   while(G.planets.length<n&&tries++<600){
     const r=G.planets.length===0?rand(52,64):rand(30,56);
@@ -621,11 +725,12 @@ function startStage(node){
       G.planets.push({x,y,r,rot:rand(.12,.35)*(Math.random()<.5?-1:1),spin:rand(0,TAU),look:G.planets.length===0?node.look:planetLook(),cannon:null});
   }
   const p0=G.planets[0];
+  if(node.fac==='you'&&node.buildings.cannon) p0.cannon={lvl:node.buildings.cannon,cd:.3,aim:-Math.PI/2};
   P={x:p0.x,y:p0.y-p0.r-12,vx:0,vy:0,land:0,lastPlanet:0,ang:-Math.PI/2,fuel:st.fuel,inv:1.5,shield:st.shieldCd?1:0,shieldT:0,charge:0,charging:false,
      ignore:-1,ignoreT:0,satA:0,over:0,face:-Math.PI/2,phaseT:0,dashCd:0};
   for(const w of run.weapons) w.cd=.5;
   run.squad.forEach((s,i)=>{ const a=i*TAU/Math.max(1,run.squad.length); addAlly(s.kind,p0.x+Math.cos(a)*(p0.r+40),p0.y+Math.sin(a)*(p0.r+40)); });
-  banner(node.type==='flagship'?`${FAC[node.fac].boss} ahead`:`${FAC[node.fac].name} ${NODE_T[node.type].name.toLowerCase()}`,2.4);
+  banner(kind==='raid'?`${FAC[fac].name} raiders attack`:kind==='flagship'?`${FAC[fac].boss} ahead`:`${FAC[fac].name} ${NODE_T[kind].name.toLowerCase()}`,2.4);
   mode='play'; bg='stage';
 }
 function addAlly(kind,x,y,extra){
@@ -634,13 +739,14 @@ function addAlly(kind,x,y,extra){
   const a=Object.assign({kind,x,y,vx:0,vy:0,hp,maxHp:hp,cd:rand(.2,.8),inv:1,down:false,downT:0,life:null,spd:R.spd,idx:G.allies.length,face:0,podCd:rand(4,8),pulseCd:3},extra||{});
   G.allies.push(a); return a;
 }
-function buildWaves(kind,fac,T){
+function buildWaves(kind,fac,T,pw=0){
   const w=[], U=FAC[fac].unique;
-  if(kind==='flagship'){ w.push([{t:'drone'},{t:'drone'},{t:'sniper'},{t:U}]); w.push([{t:'boss'}]); return w; }
+  if(kind==='raid'){ const a=[],b=[],n=2+Math.floor(pw/2); for(let i=0;i<n;i++) a.push({t:'raider'}); a.push({t:'drone'},{t:'drone'}); for(let i=0;i<=n;i++) b.push({t:'raider',elite:i===0}); b.push({t:U},{t:'sniper'}); return [a,b]; }
+  if(kind==='flagship'){ const adds=[{t:'drone'},{t:'drone'},{t:'sniper'},{t:U}]; for(let i=0;i<Math.floor(pw/2);i++) adds.push({t:U,elite:true}); w.push(adds); w.push([{t:'boss'}]); return w; }
   for(let i=0;i<3;i++){
-    let b=3+T*1.3+i*2+(kind==='elite'?3:0); const wave=[];
+    let b=3+T*1.3+i*2+(kind==='elite'?3:0)+.9*pw; const wave=[];
     const pool=[['drone',fac==='tess'?.6:1],['sniper',2]]; if(T>=2){ pool.push(['burster',3]); pool.push([U,3]); } if(T>=3) pool.push(['spinner',4]);
-    while(b>=.6){ const opts=pool.filter(p=>p[1]<=b); if(!opts.length) break; const [t,c]=pick(opts); wave.push({t,elite:kind==='elite'&&Math.random()<.4}); b-=c; }
+    while(b>=.6){ const opts=pool.filter(p=>p[1]<=b); if(!opts.length) break; const [t,c]=pick(opts); wave.push({t,elite:(kind==='elite'&&Math.random()<.4)||Math.random()<Math.min(.3,.06*pw)}); b-=c; }
     w.push(wave);
   }
   return w;
@@ -662,8 +768,8 @@ function spawnWave(list){
 }
 function spawnEnemy(type,elite,x,y){
   const d=EDEF[type];
-  let hp=d.hp*(1+.2*(G.tier-1))*(elite?2.5:1);
-  if(type==='boss') hp=d.hp*(1+.45*run.fk);
+  let hp=d.hp*(1+.2*(G.tier-1))*(elite?2.5:1)*(1+.12*G.power);
+  if(type==='boss') hp=d.hp*(1+.45*run.fk)*(1+.12*G.power);
   const e={type,elite,x,y,vx:0,vy:0,r:d.r*(elite?1.2:1),hp,maxHp:hp,spd:d.speed,cd:rand(.7,1.5),t:0,dir:Math.random()<.5?-1:1,
     spin:rand(0,TAU),flash:0,pat:0,pt:3.5,phase:0,ph:0,tx:x,ty:y,rt:0,c:FAC[G.fac].color,face:0,burn:0,burnDps:0,boarded:0,st:'drift'};
   if(type==='maw') e.well={r:250,str:300};
@@ -902,7 +1008,7 @@ function updEnemy(e,dt){
   e.t+=dt; e.flash-=dt;
   if(e.burn>0){ e.burn-=dt; hurtEnemy(e,e.burnDps*dt,'p'); if(Math.random()<.3) part(e.x+rand(-e.r,e.r),e.y+rand(-e.r,e.r),0,-40,.4,'#ff9a4d',2); if(e.dead) return; }
   if(e.boarded>0){ e.boarded-=dt; e.vx*=.9; e.vy*=.9; if(e.boarded<=0) convertEnemy(e); return; }
-  const rate=e.elite?1.35:1; e.cd-=dt*rate;
+  const rate=(e.elite?1.35:1)*(1+.05*G.power); e.cd-=dt*rate;
   const dx=P.x-e.x,dy=P.y-e.y,d=Math.hypot(dx,dy)||1, aim=Math.atan2(dy,dx); e.face=aim;
   const steer=(tvx,tvy,k)=>{ e.vx+=(tvx-e.vx)*Math.min(1,dt*k); e.vy+=(tvy-e.vy)*Math.min(1,dt*k); };
   const toward=(tx,ty,spd,k=2)=>{ const ex=tx-e.x,ey=ty-e.y,l=Math.hypot(ex,ey)||1; steer(ex/l*spd*Math.min(1,l/60),ey/l*spd*Math.min(1,l/60),k); return l; };
@@ -994,23 +1100,49 @@ function updWaves(dt){
     }
   }
 }
+const facPower=f=>(run&&f&&run.power[f])||0;
+function claimNode(n){
+  const alive=f=>aliveFac(f), counts={};
+  run.map.adj[n.id].forEach(id=>{ const m=run.map.nodes[id]; if(alive(m.fac)&&m.fac!==n.fac) counts[m.fac]=(counts[m.fac]||0)+1; });
+  const cands=Object.keys(counts); let f=null;
+  if(cands.length){ const tot=cands.reduce((a,k)=>a+counts[k],0); let r=Math.random()*tot; f=cands.find(k=>(r-=counts[k])<0)||cands[0]; }
+  else { const side=FKEYS.filter(k=>k!==n.fac&&alive(k)&&Math.abs(angDiff(FAC[k].ang,FAC[n.fac].ang)-Math.PI/2)<.01).sort((a,b)=>angDiff(FAC[a].ang,n.a)-angDiff(FAC[b].ang,n.a));
+    f=side[0]||(alive(n.fac)?n.fac:null); }
+  if(!f||!FAC[n.fac]) return '';
+  const was=n.fac; n.fac=f; n.claimed=true; n.visited=false; n.flash=1; addPower(f,1);
+  const msg=f===was?`The ${FAC[f].name} retook ${n.name} behind you. Their strength is now ${run.power[f]}.`
+    :`The ${FAC[f].name} moved in and claimed ${n.name} from the ${FAC[was].name}. Their strength is now ${run.power[f]}.`;
+  logEvent(msg,FAC[f].color); return msg;
+}
 function finishStage(){
-  const k=G.kind, fac=G.fac; run.nodes++;
+  const k=G.kind, fac=G.fac, node=G.node; run.nodes++;
   for(const p of G.pickups) if(p.type==='scrap') run.scrap+=p.val; run.scrap=Math.round(run.scrap);
   if(k==='elite') run.scrap+=30;
   const medics=run.squad.filter(s=>s.kind==='medic').length; let pre='';
   if(medics&&run.hull<run.maxHull){ run.hull=Math.min(run.maxHull,run.hull+medics); pre='Your repair tenders patched the hull.'; }
+  const add=m=>{ if(m) pre=(pre?pre+' ':'')+m; };
+  if(k==='raid'){
+    run.fleets=run.fleets.filter(f=>f!==G.fleet); run.scrap+=25;
+    add('The raider fleet is destroyed.');
+    if(G.playerClaim&&node.fac!=='you') add(ownNode(node));
+    run.fleets.forEach(planFleet);
+    showReward(fac,'combat',()=>{ if(!node.visited) enterNode(node); else toMap(); },'Raiders destroyed',pre);
+    return;
+  }
   if(k==='flagship'){
     run.fk++; run.flags[fac]=true; run.hull=run.maxHull; run.scrap+=50;
-    const legendMsg=gainModule(FAC[fac].legend);
+    run.fleets=run.fleets.filter(f=>f.fac!==fac);
+    add('Legendary salvage: '+gainModule(FAC[fac].legend));
+    if(G.playerClaim) add(ownNode(node));
     const after=()=>{
       if(run.fk>=4){ run.won=true; endRun(true); return; }
       if(run.fk===2&&!run.won){ victoryPrompt(); return; }
       toMap();
     };
-    showReward(fac,'flagship',after,`${FAC[fac].boss} destroyed`,`Legendary salvage: ${legendMsg}`);
+    showReward(fac,'flagship',after,`${FAC[fac].boss} destroyed`,pre);
     return;
   }
+  add(G.playerClaim?ownNode(node):claimNode(node));
   showReward(fac,k,toMap,k==='elite'?'Fortress broken':'System cleared',pre);
 }
 function victoryPrompt(){
@@ -1107,6 +1239,47 @@ function openBuild(){
   mode='build'; for(const k in keys) keys[k]=false; renderBuild();
 }
 function closeBuild(){ hideOverlay(); mode='play'; if(document.activeElement) document.activeElement.blur(); }
+function buildRows(b,S,c,ids){
+  return ids.map(id=>{ const B=BUILD[id], l=b[id]||0, maxed=l>=B.max, cost=maxed?0:Math.round(B.cost[l]*c);
+    return `<div class="item"><div><div class="t">${B.name}${l&&B.max>1?`, level ${l}`:''}</div><div class="d">${B.desc}</div></div><button data-act="sys" data-arg="${id}" ${maxed||S<cost?'disabled':''}>${maxed?(B.max>1?'Maxed':'Built'):(l?'Upgrade for ':'Build for ')+cost}</button></div>`; }).join('');
+}
+function sysRows(S,c){ return buildRows(G.sysBuild,S,c,['mine','hub','garrison']); }
+function openColony(){
+  const n=run.map.nodes[run.pos]; if(n.fac!=='you') return;
+  mapbar.classList.remove('show'); mode='colony';
+  const render=()=>{
+    const S=Math.floor(run.scrap), c=st.cost, b=n.buildings, routes=tradeRoutes().filter(([u])=>u===n.id).length;
+    overlay(`<div class="panel"><div class="phead"><h2>${n.name}</h2><div class="scrap">${S} scrap</div></div>
+      <p class="sub">One of your systems. It produces ${1+2*(b.mine||0)} goods every jump and has ${routes} trade route${routes===1?'':'s'} into enemy territory. Raiders would need ${siegeLen(n)} jumps to capture it.</p>
+      <div class="list">${buildRows(b,S,c,['mine','hub','garrison','cannon'])}</div>
+      <div class="row-actions"><button data-act="back">Back to the star chart</button></div></div>`,{
+      sys:id=>{ const l=b[id]||0; run.scrap-=Math.round(BUILD[id].cost[l]*st.cost); b[id]=l+1; n.flash=1; sfx('buy'); render(); },
+      back:toMap });
+  };
+  render();
+}
+function openTrade(){
+  mapbar.classList.remove('show'); mode='trade'; let note='';
+  const render=()=>{
+    const routes=tradeRoutes(), N=run.map.nodes, facs=FKEYS.filter(f=>routes.some(([,v])=>N[v].fac===f));
+    const rows=facs.map(f=>{ const r=routes.filter(([,v])=>N[v].fac===f).length, rate=tradeRate(f), trib=8+2*run.power[f], tech=FAC[f].mods.filter(id=>(run.mods[id]||0)<MODS[id].max);
+      return `<div class="item" style="flex-wrap:wrap"><div style="flex:1;min-width:13em">${facTag(f)}<div class="t">${r} trade route${r>1?'s':''}, strength ${run.power[f]}</div><div class="d">They pay ${rate} scrap per good.</div></div>
+        <div class="tbtns"><button data-act="sell" data-arg="${f}" ${run.goods<5?'disabled':''}>Sell 5 goods for ${5*rate}</button>
+        <button class="ghost" data-act="sellall" data-arg="${f}" ${run.goods<1?'disabled':''}>Sell all</button>
+        <button class="ghost" data-act="trib" data-arg="${f}" ${run.goods<trib||run.power[f]<1?'disabled':''}>Pay ${trib} goods tribute to cut their strength by 1</button>
+        <button class="ghost" data-act="tech" data-arg="${f}" ${run.goods<20||!tech.length?'disabled':''}>${tech.length?'Buy their tech for 20 goods':'No tech left to buy'}</button></div></div>`; }).join('');
+    overlay(`<div class="panel"><div class="phead"><h2>Trade</h2><div><span class="goods">${run.goods} goods</span> <span class="scrap" style="margin-left:1em">${Math.floor(run.scrap)} scrap</span></div></div>
+      <p class="sub">Your systems produce ${goodsPerJump()} goods every jump${hubIncome()?`, and your trade hubs earn ${hubIncome()} scrap`:''}. Each of your systems next to enemy territory opens a trade route with that faction. More routes and more trade hubs raise the price they pay.${note?' '+note:''}</p>
+      <div class="list">${rows||'<p class="owned">You have no trade routes. Claim a system next to enemy territory to open one.</p>'}</div>
+      <div class="row-actions"><button data-act="back">Back to the star chart</button></div></div>`,{
+      sell:f=>{ const r=tradeRate(f); run.goods-=5; run.scrap+=5*r; note=`Sold 5 goods for ${5*r} scrap.`; sfx('buy'); render(); },
+      sellall:f=>{ const r=tradeRate(f), g=run.goods; run.goods=0; run.scrap+=g*r; note=`Sold ${g} goods for ${g*r} scrap.`; sfx('buy'); render(); },
+      trib:f=>{ run.goods-=8+2*run.power[f]; addPower(f,-1); note=`The ${FAC[f].name} accept your tribute. Their strength drops to ${run.power[f]}.`; sfx('buy'); render(); },
+      tech:f=>{ run.goods-=20; note=gainModule(pick(FAC[f].mods.filter(id=>(run.mods[id]||0)<MODS[id].max))); sfx('buy'); render(); },
+      back:toMap });
+  };
+  render();
+}
 function renderBuild(){
   const pl=G.planets[P.land], c=st.cost, cl=pl.cannon?pl.cannon.lvl:0, S=Math.floor(run.scrap);
   const cannonCost=cl<3?Math.round([35,55,80][cl]*c):0, sc=satCost(), rep=Math.round(25*c);
@@ -1120,6 +1293,9 @@ function renderBuild(){
     <div class="sec">This planet</div>
     <div class="list"><div class="item"><div><div class="t">${cl?`Planet cannon, level ${cl}`:'Planet cannon'}</div><div class="d">Automatically fires at enemies within range. Each level adds a barrel.</div></div>
       <button data-act="cannon" ${cl>=3||S<cannonCost?'disabled':''}>${cl>=3?'Maxed':(cl?'Upgrade for ':'Build for ')+cannonCost}</button></div></div>
+    <div class="sec">This system${G.node.fac==='you'?', your territory':''}</div>
+    <p class="owned">${G.node.fac==='you'?'This system already flies your flag. Buildings here stay after the fight.':G.playerClaim?'This system will join your dominion when you clear it.':'Building anything here, including a cannon, claims this system for your dominion once you clear it. Otherwise a neighbouring faction will take it.'}</p>
+    <div class="list">${sysRows(S,c)}</div>
     <div class="sec">Your orbit</div>
     <div class="list"><div class="item"><div><div class="t">Satellite (${run.sats} of 6)</div><div class="d">Circles your ship, shoots enemies and blocks bullets it touches.</div></div>
       <button data-act="sat" ${run.sats>=6||S<sc?'disabled':''}>${run.sats>=6?'Full':'Build for '+sc}</button></div>
@@ -1127,7 +1303,8 @@ function renderBuild(){
       <button data-act="rep" ${run.hull>=run.maxHull||S<rep?'disabled':''}>Repair for ${rep}</button></div></div>
     <div class="sec">Ship weapons</div><div class="list">${wRows}</div>
     <div class="row-actions"><button data-act="close">Back to the fight</button></div></div>`,{
-    cannon:()=>{ run.scrap-=cannonCost; if(pl.cannon) pl.cannon.lvl++; else pl.cannon={lvl:1,cd:.3,aim:-Math.PI/2}; sfx('buy'); renderBuild(); },
+    cannon:()=>{ run.scrap-=cannonCost; if(pl.cannon) pl.cannon.lvl++; else pl.cannon={lvl:1,cd:.3,aim:-Math.PI/2}; G.playerClaim=true; G.sysBuild.cannon=Math.max(G.sysBuild.cannon||0,pl.cannon.lvl); sfx('buy'); renderBuild(); },
+    sys:id=>{ const l=G.sysBuild[id]||0; run.scrap-=Math.round(BUILD[id].cost[l]*st.cost); G.sysBuild[id]=l+1; G.playerClaim=true; sfx('buy'); renderBuild(); },
     sat:()=>{ run.scrap-=sc; run.sats++; recalc(); sfx('buy'); renderBuild(); },
     rep:()=>{ run.scrap-=rep; run.hull++; sfx('buy'); renderBuild(); },
     weap:t=>{ const w=run.weapons.find(x=>x.t===t), cost=Math.round((w?40+22*w.lvl:70)*c); run.scrap-=cost; if(w) w.lvl++; else run.weapons.push({t,lvl:1,cd:.3}); sfx('buy'); renderBuild(); },
@@ -1144,7 +1321,7 @@ function openPause(){
     Modules: ${run.equipped.length?run.equipped.map(modLabel).join(', '):'none equipped'}<br>
     Squad: ${run.squad.length?run.squad.map(s=>RECRUITS[s.kind].name).join(', '):'none'}${M('tactics')?`, order: ${run.tactic}`:''}<br>
     Upgrades: ${ups.length?ups.join(', '):'none yet'}</p>
-    <p class="owned">${FAC[G.fac].name}: ${FAC[G.fac].threat}</p>
+    <p class="owned">${FAC[G.fac].name}${G.power?` (strength ${G.power})`:''}: ${FAC[G.fac].threat}</p>
     <div class="row-actions"><button data-act="resume">Resume</button><button class="ghost" data-act="abandon">Abandon run</button></div></div>`,{
     resume, abandon:()=>endRun(false,true)
   });
@@ -1161,7 +1338,7 @@ function endRun(win,abandoned){
   const title=run.fk>=4?'The whole chart is yours':win?'Victory':abandoned?'Run abandoned':'Hull breached';
   const text=win?`You destroyed ${run.fk} flagship${run.fk>1?'s':''} and the chart bends around your name.`:'Your ship breaks apart, but the salvage you sent home becomes stardust for the next pilot.';
   overlay(`<div class="panel narrow"><h2>${title}</h2><p class="sub">${text}</p>
-    <div class="big-stats"><div><b>${run.fk}</b><span>Flagships destroyed</span></div><div><b>${run.nodes}</b><span>Systems cleared</span></div><div><b>${run.kills}</b><span>Enemies destroyed</span></div><div><b class="dust">+${dust}</b><span>Stardust earned</span></div></div>
+    <div class="big-stats"><div><b>${run.fk}</b><span>Flagships destroyed</span></div><div><b>${ownedNodes().length}</b><span>Systems held</span></div><div><b>${run.nodes}</b><span>Systems cleared</span></div><div><b>${run.kills}</b><span>Enemies destroyed</span></div><div><b class="dust">+${dust}</b><span>Stardust earned</span></div></div>
     <div class="row-actions"><button data-act="again">Start a new run</button><button class="ghost" data-act="hangar">Open hangar</button><button class="ghost" data-act="title">Title screen</button></div></div>`,{
     again:()=>{ run=null; startRun(); }, hangar:()=>{ run=null; openHangar(toTitle); }, title:toTitle
   });
@@ -1329,9 +1506,10 @@ function drawHUD(){
   ctx.font=`700 16px ${FONT}`; ctx.fillText(Math.floor(run.scrap)+' scrap',44,71);
   if(G.allies.length||run.squad.length){ ctx.font=`500 12px ${FONT}`; ctx.fillStyle='#9aa0c8';
     const up=G.allies.filter(a=>!a.down).length; ctx.fillText(`Squad ${up}/${G.allies.length}`+(M('tactics')?`, ${run.tactic} (Q)`:''),24,94); }
-  ctx.textAlign='right'; ctx.fillStyle=FAC[G.fac].color; ctx.font=`700 16px ${FONT}`; ctx.fillText(FAC[G.fac].name,W-24,26);
+  ctx.textAlign='right'; ctx.fillStyle=FAC[G.fac].color; ctx.font=`700 16px ${FONT}`; ctx.fillText(FAC[G.fac].name+(G.power?`, strength ${G.power}`:''),W-24,26);
   ctx.fillStyle='#9aa0c8'; ctx.font=`500 13px ${FONT}`; ctx.fillText(NODE_T[G.kind].name+(G.clear?'':`, wave ${Math.max(1,G.wave)} of ${G.waves.length}`),W-24,46);
   ctx.fillText(run.weapons.map(w=>`${WEAP[w.t].name} ${w.lvl}`).join('   '),W-24,66);
+  for(let i=0;i<Math.min(12,G.power);i++){ ctx.fillStyle=FAC[G.fac].color; ctx.fillRect(W-30-i*9,78,6,6); }
   if(G.boss){ const b=G.boss, bw=460; ctx.fillStyle='rgba(46,52,112,.9)'; ctx.fillRect(W/2-bw/2,22,bw,8); ctx.fillStyle=FAC[G.fac].color; ctx.fillRect(W/2-bw/2,22,bw*Math.max(0,b.hp/b.maxHp),8);
     ctx.textAlign='center'; ctx.fillStyle=FAC[G.fac].color; ctx.font=`700 13px ${FONT}`; ctx.fillText(FAC[G.fac].boss,W/2,42); }
   if(G.banner&&G.banner.t>0){ const b=G.banner; b.t-=1/60; const a=Math.min(1,b.t*2,(b.max-b.t)*4);
@@ -1342,63 +1520,141 @@ function drawHUD(){
   ctx.restore();
 }
 
+let mapLast=0;
 function drawMap(t){
+  const dt=Math.min(.05,Math.max(0,t-mapLast)); mapLast=t;
   drawBG(t,t*.5);
-  const Mp=run.map, N=Mp.nodes;
-  // faction territory wedges
-  for(const f of FKEYS){ const F=FAC[f]; ctx.fillStyle=F.color; ctx.globalAlpha=run.flags[f]?.03:.07; ctx.beginPath(); ctx.moveTo(MC.x,MC.y);
+  const Mp=run.map, N=Mp.nodes, A=Mp.adj;
+  for(const f of FKEYS){ const F=FAC[f]; ctx.fillStyle=F.color; ctx.globalAlpha=.03; ctx.beginPath(); ctx.moveTo(MC.x,MC.y);
     for(let a=F.ang-Math.PI/4;a<=F.ang+Math.PI/4+.001;a+=.05) ctx.lineTo(MC.x+Math.cos(a)*MC.rx*5.6,MC.y+Math.sin(a)*MC.ry*5.6); ctx.closePath(); ctx.fill(); }
   ctx.globalAlpha=1;
-  ctx.strokeStyle='rgba(46,52,112,.5)'; ctx.lineWidth=1;
+  // ownership halos: the live territory map
+  for(const n of N){ if(!n.fac) continue; const c=FI(n.fac).color, R=n.type==='flagship'?56:42;
+    const g=ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,R); g.addColorStop(0,hexA(c,n.fac==='you'?.36:.2)); g.addColorStop(1,hexA(c,0));
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(n.x,n.y,R,0,TAU); ctx.fill(); }
+  ctx.strokeStyle='rgba(46,52,112,.45)'; ctx.lineWidth=1;
   for(let k=1;k<=5;k++){ ctx.beginPath(); ctx.ellipse(MC.x,MC.y,MC.rx*k,MC.ry*k,0,0,TAU); ctx.stroke(); }
-  ctx.textBaseline='alphabetic'; ctx.textAlign='left';
-  ctx.fillStyle='#f3e9d2'; ctx.font=`800 34px ${FONT}`; ctx.fillText('Star chart',36,56);
-  ctx.fillStyle='#9aa0c8'; ctx.font=`500 14px ${FONT}`;
-  ctx.fillText(run.won?`${run.fk} flagships destroyed. The run is already a win.`:`Flagships destroyed: ${run.fk} of 2 needed to win`,38,80);
-  // faction labels by flagship
-  ctx.textAlign='center';
-  for(const f of FKEYS){ const fn=N.find(n=>n.type==='flagship'&&n.fac===f); const lx=clamp(fn.x,120,W-120), ly=f==='choir'?fn.y-34:f==='tide'?fn.y+44:fn.y-40;
-    ctx.fillStyle=FAC[f].color; ctx.font=`700 14px ${FONT}`; ctx.fillText(FAC[f].name+(run.flags[f]?' (defeated)':''),lx,ly); }
-  // legend
-  const leg=['combat','elite','outpost','recruit','anomaly','flagship']; ctx.font=`500 12.5px ${FONT}`; ctx.textAlign='left';
-  leg.forEach((k,i)=>{ const x=W-178,y=34+i*20; nodeMarker(x,y,6,k,t,false); ctx.fillStyle='#c9cdea'; ctx.fillText(NODE_T[k].name,x+16,y+4); });
   // edges
-  const hist=run.history, A=Mp.adj;
-  const traveled=new Set(); for(let i=1;i<hist.length;i++){ const a=hist[i-1],b=hist[i]; traveled.add(a<b?a+'-'+b:b+'-'+a); }
-  for(const [i,j] of Mp.edges){ const n=N[i],m=N[j], tr=traveled.has(i+'-'+j);
-    ctx.strokeStyle=tr?'rgba(92,225,230,.85)':'rgba(120,128,200,.25)'; ctx.lineWidth=tr?3:1.3; ctx.beginPath(); ctx.moveTo(n.x,n.y); ctx.lineTo(m.x,m.y); ctx.stroke(); }
+  const hist=run.history, traveled=new Set();
+  for(let i=1;i<hist.length;i++){ const a=hist[i-1],b=hist[i]; traveled.add(a<b?a+'-'+b:b+'-'+a); }
+  for(const [i,j] of Mp.edges){ const n=N[i],m=N[j], tr=traveled.has(i+'-'+j), same=n.fac&&n.fac===m.fac;
+    ctx.strokeStyle=tr?'rgba(92,225,230,.8)':same?hexA(FI(n.fac).color,.4):'rgba(120,128,200,.22)'; ctx.lineWidth=tr?3:same?2:1.3;
+    ctx.beginPath(); ctx.moveTo(n.x,n.y); ctx.lineTo(m.x,m.y); ctx.stroke(); }
+  // trade routes with moving cargo
+  for(const [u,v] of tradeRoutes()){ const a=N[u],b=N[v]; ctx.strokeStyle='rgba(126,224,129,.55)'; ctx.lineWidth=2; ctx.setLineDash([3,6]); ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); ctx.setLineDash([]);
+    for(let k=0;k<2;k++){ const p=((t*.35+k*.5+u*.13)%1); ctx.fillStyle='#7ee081'; ctx.fillRect(a.x+(b.x-a.x)*p-2,a.y+(b.y-a.y)*p-2,4,4); } }
   if(run.route.length){ ctx.strokeStyle='#ffc857'; ctx.lineWidth=3; ctx.setLineDash([10,8]); ctx.lineDashOffset=-t*30; ctx.beginPath(); ctx.moveTo(N[run.pos].x,N[run.pos].y); run.route.forEach(id=>ctx.lineTo(N[id].x,N[id].y)); ctx.stroke(); ctx.setLineDash([]); }
   const lastId=run.route.length?run.route[run.route.length-1]:run.pos, reach=A[lastId];
-  const hover=mode==='map'?nodeAt(mouse.x,mouse.y):null;
+  let hoverFleet=null;
+  if(mode==='map') for(const f of run.fleets) if(f.dx!=null&&d2(mouse.x,mouse.y,f.dx,f.dy)<18*18) hoverFleet=f;
+  const hover=mode==='map'&&!hoverFleet?nodeAt(mouse.x,mouse.y):null;
   for(const n of N){
-    const r=n.type==='flagship'?20:n.type==='hub'?16:12;
-    const dead=n.type==='flagship'&&run.flags[n.fac];
+    const r=n.type==='flagship'?20:n.type==='hub'?16:12, own=n.fac==='you';
+    const dead=n.type==='flagship'&&run.flags[n.home]&&!own;
     if(reach.includes(n.id)&&!dead){ ctx.strokeStyle=`rgba(255,200,87,${.35+.4*Math.sin(t*4)})`; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(n.x,n.y,r+9,0,TAU); ctx.stroke(); }
-    ctx.globalAlpha=(n.visited&&n.id!==run.pos&&n.type!=='hub')?.4:1;
+    ctx.globalAlpha=(n.visited&&!own&&n.id!==run.pos)?.4:1;
     drawPlanet(n.x,n.y,r*.72,n.look,t*.3);
-    nodeMarker(n.x,n.y,r,n.type,t,n===hover,n.fac);
+    nodeMarker(n.x,n.y,r,n.type,t,n===hover,n.fac,own?'#5ce1e6':null);
     if(dead){ ctx.strokeStyle='#ff4f79'; ctx.lineWidth=3; ctx.beginPath(); ctx.moveTo(n.x-12,n.y-12); ctx.lineTo(n.x+12,n.y+12); ctx.moveTo(n.x+12,n.y-12); ctx.lineTo(n.x-12,n.y+12); ctx.stroke(); }
     ctx.globalAlpha=1;
+    if(own){ claimFlag(n.x-r-6,n.y-r+2,'#5ce1e6'); let bx=n.x-12;
+      for(const id of ['mine','hub','garrison','cannon']) for(let l=0;l<(n.buildings[id]||0);l++){ ctx.fillStyle=BUILD[id].pip; ctx.fillRect(bx,n.y+r+5,5,5); bx+=7; } }
+    else if(n.claimed&&!n.visited&&n.fac) claimFlag(n.x-r-6,n.y-r+2,FI(n.fac).color);
+    if(n.flash>0){ const c=n.fac?FI(n.fac).color:'#ffffff'; const p=1-n.flash; ctx.strokeStyle=hexA(c,n.flash); ctx.lineWidth=3; ctx.beginPath(); ctx.arc(n.x,n.y,r+6+p*40,0,TAU); ctx.stroke(); n.flash-=dt*.45; }
     const ri2=run.route.indexOf(n.id);
     if(ri2>=0){ ctx.fillStyle='#ffc857'; ctx.beginPath(); ctx.arc(n.x+r+2,n.y-r-2,9,0,TAU); ctx.fill(); ctx.fillStyle='#0a0e24'; ctx.font=`800 11px ${FONT}`; ctx.textAlign='center'; ctx.fillText(ri2+1,n.x+r+2,n.y-r+2); ctx.textAlign='left'; }
   }
+  // raider fleets
+  for(const f of run.fleets){
+    f.anim=Math.min(1,(f.anim==null?1:f.anim)+dt*1.1);
+    const a=N[f.from!=null?f.from:f.at], b=N[f.at], e=f.anim<.5?2*f.anim*f.anim:1-Math.pow(-2*f.anim+2,2)/2;
+    const x=a.x+(b.x-a.x)*e+Math.cos(t*2+f.id)*7, y=a.y+(b.y-a.y)*e+Math.sin(t*2.6+f.id)*5; f.dx=x; f.dy=y;
+    const col=FAC[f.fac].color;
+    let head=Math.atan2(b.y-a.y,b.x-a.x);
+    if(f.next!=null&&!f.siege){ const m=N[f.next]; head=Math.atan2(m.y-y,m.x-x); const L=Math.hypot(m.x-x,m.y-y)-20;
+      ctx.strokeStyle=hexA(col,.6); ctx.lineWidth=2; ctx.setLineDash([5,5]); ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+Math.cos(head)*L,y+Math.sin(head)*L); ctx.stroke(); ctx.setLineDash([]);
+      const hx=x+Math.cos(head)*L,hy=y+Math.sin(head)*L; ctx.fillStyle=hexA(col,.8); ctx.beginPath(); ctx.moveTo(hx+Math.cos(head)*7,hy+Math.sin(head)*7); ctx.lineTo(hx+Math.cos(head+2.5)*7,hy+Math.sin(head+2.5)*7); ctx.lineTo(hx+Math.cos(head-2.5)*7,hy+Math.sin(head-2.5)*7); ctx.fill(); }
+    if(f.siege){ ctx.strokeStyle=hexA(col,.5+.4*Math.sin(t*6)); ctx.lineWidth=3; ctx.beginPath(); ctx.arc(b.x,b.y,24+Math.sin(t*6)*3,0,TAU); ctx.stroke();
+      ctx.fillStyle=col; ctx.font=`800 14px ${FONT}`; ctx.textAlign='center'; ctx.fillText(f.siegeT,b.x,b.y-30); ctx.textAlign='left'; head=t; }
+    ctx.save(); ctx.translate(x,y); ctx.rotate(head);
+    for(const [ox,oy] of [[4,0],[-6,-6],[-6,6]]){ ctx.beginPath(); ctx.moveTo(ox+7,oy); ctx.lineTo(ox-4,oy-4); ctx.lineTo(ox-2,oy); ctx.lineTo(ox-4,oy+4); ctx.closePath(); ctx.fillStyle=col; ctx.fill(); ctx.strokeStyle='#0a0e24'; ctx.lineWidth=1; ctx.stroke(); }
+    ctx.restore();
+  }
   const cur=N[run.pos], oa=t*1.6; drawShip(cur.x+Math.cos(oa)*26,cur.y+Math.sin(oa)*26,oa+Math.PI/2,.75);
-  if(hover){
-    const T=NODE_T[hover.type], F=hover.fac?FAC[hover.fac]:null; const bw=300;
-    let title=hover.type==='flagship'?F.boss:T.name; if(hover.id===run.pos) title+=' (you are here)';
-    let desc=hover.visited&&hover.type!=='hub'?'Already visited. You can pass through freely.':T.desc;
-    if(F&&!hover.visited) desc+=' '+F.threat;
-    ctx.font=`400 12.5px ${FONT}`; const lines=wrapLines(desc,bw-24); const bh=58+lines.length*16;
-    let x=hover.x+28,y=hover.y-30; if(x+bw>W-10) x=hover.x-28-bw; y=clamp(y,10,H-bh-80);
-    ctx.fillStyle='rgba(20,24,56,.97)'; ctx.strokeStyle=F?F.color:T.color; ctx.lineWidth=1.5; ctx.beginPath(); if(ctx.roundRect) ctx.roundRect(x,y,bw,bh,8); else ctx.rect(x,y,bw,bh); ctx.fill(); ctx.stroke();
-    ctx.textAlign='left'; ctx.fillStyle='#f3e9d2'; ctx.font=`700 15px ${FONT}`; ctx.fillText(title,x+12,y+22);
-    if(F){ ctx.fillStyle=F.color; ctx.font=`600 12px ${FONT}`; ctx.fillText(`${F.name} territory`,x+12,y+40); }
-    ctx.fillStyle='#c9cdea'; ctx.font=`400 12.5px ${FONT}`; lines.forEach((l,i)=>ctx.fillText(l,x+12,y+(F?58:42)+i*16));
+  // labels, panels
+  ctx.textBaseline='alphabetic'; ctx.textAlign='left';
+  ctx.fillStyle='#f3e9d2'; ctx.font=`800 30px ${FONT}`; ctx.fillText('Star chart',36,50);
+  ctx.fillStyle='#9aa0c8'; ctx.font=`500 13px ${FONT}`;
+  ctx.fillText(run.won?`${run.fk} flagships destroyed. The run is already a win.`:`Flagships destroyed: ${run.fk} of 2 needed to win`,38,72);
+  drawPowerPanel(t,N);
+  ctx.textAlign='center';
+  for(const f of FKEYS){ const fn=N.find(n=>n.type==='flagship'&&n.home===f)||N.find(n=>n.ring===5&&n.home===f); if(!fn) continue;
+    const lx=clamp(fn.x,120,W-120), ly=f==='choir'?fn.y-34:f==='tide'?fn.y+44:fn.y-40;
+    ctx.fillStyle=FAC[f].color; ctx.font=`700 14px ${FONT}`; ctx.fillText(FAC[f].name+(run.flags[f]?' (defeated)':''),lx,ly); }
+  const leg=['combat','elite','outpost','recruit','anomaly','flagship']; ctx.font=`500 12.5px ${FONT}`; ctx.textAlign='left';
+  let ly=30;
+  leg.forEach(k=>{ const x=W-178; nodeMarker(x,ly,6,k,t,false); ctx.fillStyle='#c9cdea'; ctx.fillText(NODE_T[k].name,x+16,ly+4); ly+=20; });
+  claimFlag(W-182,ly+4,'#5ce1e6'); ctx.fillStyle='#c9cdea'; ctx.fillText('Your system',W-162,ly+4); ly+=20;
+  claimFlag(W-182,ly+4,'#ff8a5b'); ctx.fillStyle='#c9cdea'; ctx.fillText('Claimed by a faction',W-162,ly+4); ly+=20;
+  ctx.fillStyle='#ff4f79'; ctx.beginPath(); ctx.moveTo(W-172,ly); ctx.lineTo(W-184,ly-5); ctx.lineTo(W-184,ly+5); ctx.fill(); ctx.fillStyle='#c9cdea'; ctx.fillText('Raider fleet',W-162,ly+4); ly+=20;
+  ctx.strokeStyle='rgba(126,224,129,.8)'; ctx.setLineDash([3,4]); ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(W-186,ly); ctx.lineTo(W-170,ly); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle='#c9cdea'; ctx.fillText('Trade route',W-162,ly+4);
+  // event log
+  ctx.font=`500 12px ${FONT}`;
+  run.log.slice(0,3).forEach((ev,i)=>{ const age=t-ev.t; ctx.globalAlpha=age<0||age>40?.55:1; ctx.fillStyle=ev.color; const line=wrapLines(ev.text,380); ctx.fillText(line[0]+(line.length>1?'…':''),36,H-96-i*18); });
+  ctx.globalAlpha=1;
+  // tooltip
+  if(hoverFleet){ const f=hoverFleet, F=FAC[f.fac];
+    let desc=f.siege?`Besieging ${N[f.at].name}. It falls in ${f.siegeT} jump${f.siegeT>1?'s':''} unless you jump in and fight.`:
+      f.target===run.pos?'Hunting you. Jumping into the same system starts a fight.':f.target!=null?`Heading for ${N[f.target].name}, ${f.dist} jump${f.dist>1?'s':''} away. They capture systems that fly your flag.`:'Prowling for a target.';
+    tooltip(f.dx,f.dy,`${F.name} raiders`,`Strength ${run.power[f.fac]}`,F.color,desc+' Meeting them in a system starts a fight.');
+    cv.style.cursor='default';
+  } else if(hover){
+    const T=NODE_T[hover.type], F=hover.fac?FI(hover.fac):null, own=hover.fac==='you';
+    let title=hover.type==='flagship'&&!own?FAC[hover.home].boss:hover.name; if(hover.id===run.pos) title+=' (you are here)';
+    let sub=own?'Your dominion':F?`${F.name}, strength ${facPower(hover.fac)}`:'';
+    let desc;
+    if(own){ const b=hover.buildings, bl=Object.keys(BUILD).filter(k=>b[k]).map(k=>BUILD[k].name+(BUILD[k].max>1?' '+b[k]:''));
+      desc=`Produces ${1+2*(b.mine||0)} goods per jump. ${bl.length?'Buildings: '+bl.join(', ')+'.':'No buildings yet.'} Raiders need ${siegeLen(hover)} jumps to capture it.${hover.id===run.pos?' Open Colony to build here.':''}`; }
+    else { desc=(hover.visited&&hover.type!=='hub')?`${T.name}. Already visited, so you can pass through freely.`:`${T.name}. ${T.desc}`;
+      if(hover.claimed&&!hover.visited) desc=`Claimed by the ${F.name}. `+desc;
+      if(F&&!hover.visited&&FAC[hover.fac]) desc+=' '+FAC[hover.fac].threat; }
+    tooltip(hover.x,hover.y,title,sub,F?F.color:T.color,desc);
     cv.style.cursor=(reach.includes(hover.id)||run.route.includes(hover.id)||A[run.pos].includes(hover.id))?'pointer':'default';
   } else cv.style.cursor='default';
 }
-function nodeMarker(x,y,r,type,t,hot,fac){
-  const col=type==='flagship'&&fac?FAC[fac].color:NODE_T[type].color;
+function tooltip(px,py,title,sub,col,desc){
+  const bw=300; ctx.font=`400 12.5px ${FONT}`; const lines=wrapLines(desc,bw-24); const bh=(sub?58:42)+lines.length*16;
+  let x=px+28,y=py-30; if(x+bw>W-10) x=px-28-bw; y=clamp(y,10,H-bh-80);
+  ctx.fillStyle='rgba(20,24,56,.97)'; ctx.strokeStyle=col; ctx.lineWidth=1.5; ctx.beginPath(); if(ctx.roundRect) ctx.roundRect(x,y,bw,bh,8); else ctx.rect(x,y,bw,bh); ctx.fill(); ctx.stroke();
+  ctx.textAlign='left'; ctx.fillStyle='#f3e9d2'; ctx.font=`700 15px ${FONT}`; ctx.fillText(title,x+12,y+22);
+  if(sub){ ctx.fillStyle=col; ctx.font=`600 12px ${FONT}`; ctx.fillText(sub,x+12,y+40); }
+  ctx.fillStyle='#c9cdea'; ctx.font=`400 12.5px ${FONT}`; lines.forEach((l,i)=>ctx.fillText(l,x+12,y+(sub?58:42)+i*16));
+}
+function drawPowerPanel(t,N){
+  const x=30,y0=88,w=232,rows=[...FKEYS,'you'];
+  ctx.fillStyle='rgba(10,14,36,.72)'; ctx.beginPath(); if(ctx.roundRect) ctx.roundRect(x-8,y0-6,w,20+rows.length*34,8); else ctx.rect(x-8,y0-6,w,20+rows.length*34); ctx.fill();
+  ctx.textAlign='left'; ctx.fillStyle='#9aa0c8'; ctx.font=`700 12px ${FONT}`; ctx.fillText('Power balance',x,y0+8);
+  rows.forEach((f,i)=>{
+    const y=y0+30+i*34, F=FI(f), cnt=N.filter(n=>n.fac===f).length, dead=f!=='you'&&run.flags[f];
+    ctx.globalAlpha=dead?.4:1;
+    ctx.fillStyle=F.color; ctx.beginPath(); ctx.arc(x+5,y-4,5,0,TAU); ctx.fill();
+    ctx.fillStyle='#f3e9d2'; ctx.font=`600 12.5px ${FONT}`; ctx.fillText(F.name,x+16,y);
+    ctx.fillStyle='#9aa0c8'; ctx.font=`500 11.5px ${FONT}`; ctx.textAlign='right';
+    ctx.fillText(dead?'defeated':`${cnt} system${cnt===1?'':'s'}`,x+w-16,y); ctx.textAlign='left';
+    if(f==='you'){ ctx.fillStyle='#7ee081'; ctx.fillText(`${run.goods} goods, +${goodsPerJump()} per jump${tradeRoutes().length?`, ${tradeRoutes().length} trade routes`:''}`,x+16,y+15); }
+    else {
+      const p=run.power[f], fl=run.fleets.filter(q=>q.fac===f).length;
+      for(let k=0;k<12;k++){ ctx.fillStyle=k<p?F.color:'rgba(46,52,112,.9)'; ctx.fillRect(x+16+k*9,y+7,7,7); }
+      ctx.fillStyle='#c9cdea'; ctx.fillText(p>12?`${p}`:'',x+16+12*9+2,y+14);
+      if(fl){ ctx.fillStyle=F.color; ctx.textAlign='right'; ctx.fillText(`${fl} fleet${fl>1?'s':''}`,x+w-16,y+14); ctx.textAlign='left'; }
+      const pf=run.pflash[f]; if(pf&&t-pf.t<3&&t>=pf.t){ ctx.globalAlpha=1-(t-pf.t)/3; ctx.fillStyle=pf.d>0?'#ff4f79':'#7ee081'; ctx.font=`800 13px ${FONT}`; ctx.fillText(pf.d>0?`+${pf.d}`:`${pf.d}`,x+16+Math.min(12,p)*9+4,y+14-(t-pf.t)*6); }
+    }
+    ctx.globalAlpha=1;
+  });
+}
+function claimFlag(x,y,c){ ctx.strokeStyle=c; ctx.fillStyle=c; ctx.lineWidth=1.8; ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x,y-14); ctx.stroke(); ctx.beginPath(); ctx.moveTo(x,y-14); ctx.lineTo(x+9,y-10.5); ctx.lineTo(x,y-7); ctx.closePath(); ctx.fill(); }
+function nodeMarker(x,y,r,type,t,hot,fac,over){
+  const col=over||(type==='flagship'&&FAC[fac]?FAC[fac].color:NODE_T[type].color);
   ctx.strokeStyle=col; ctx.lineWidth=hot?3.5:2.3;
   if(type==='elite'){ ctx.beginPath(); for(let i=0;i<14;i++){ const a=i*TAU/14, rr=i%2?r:r+4; ctx.lineTo(x+Math.cos(a)*rr,y+Math.sin(a)*rr);} ctx.closePath(); ctx.stroke(); }
   else if(type==='outpost'){ ctx.strokeRect(x-r,y-r,r*2,r*2); }
